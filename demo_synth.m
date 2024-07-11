@@ -1,52 +1,332 @@
-%% SYNTHESIZE A MEASUREMENT ON A RIBBON
-clc
-clear all
+clear ; set(0,'DefaultFigureWindowStyle','docked')
+animate = true ; % if true the displacement field and wavenumber response are animated along the frequency axis
 
-%% RECTANGULAR, ISOTROPIC, HOMOGENEOUS PLATE
-clc,clearvars ;
-PLATE = [] ;
+%% Variable parameters
+
+% Source positions (not simultaneous)
+xF_var = permute([linspace(2,50,1).' linspace(40,40,1).'] /100, [3 2 1]) ;
+
 % Plate parameters
-    PLATE.L = [100 80] ; % plate dimensions (mm)
-    PLATE.dx = 2*[1 1] ; % spatial step (mm)
-    PLATE.h = .1 ; % plate thickness (mm)
-    PLATE.E = 70e3.*(1+.05i) ; % Young Modulus (MPa)
-    PLATE.nu = .33 ; % Poisson ratio
-    PLATE.rho = 2600e-12 ; % Density (tons/mm3)
-    PLATE.bc = 'clamped' ; % kind of boundary conditions
-    PLATE.xf = PLATE.L.*[3/10 4/10] ; % location of the point load application
-    w = 2*pi*15e3 ; % Frequency (rad/s) 
-% Basic discretization
-    PLATE.mesh = fe.mesh.gridmesh(PLATE.L,PLATE.dx) ;
-% Plate behavior
-    PLATE = plate.behavior(PLATE) ;
-% Solve using FEM
-    u = fe.mindlin(PLATE,w) ;
-    U = reshape(u,[PLATE.mesh.nX+1 numel(w)]) ;
-    X = reshape(PLATE.mesh.X,[PLATE.mesh.nX+1 2]) ;
-% Spatial response
-    clf ; axis equal tight
-    %fe.mesh.plotmesh(PLATE.mesh,real(u(:,end))) ;
-    surf(X(:,:,1),X(:,:,2),real(U),'edgecolor','k','facecolor','interp') ;
-    title("Harmonic response at f="+string(w/2/pi)+"Hz")
-    xlabel 'X(mm)' ; ylabel 'Y(mm)' ;
-%% Fourier response
-    [Fu,K] = spectrum.fourier(U,PLATE.dx) ;
-    clf ; axis equal tight ;
-    surf(K{1},K{2},0*abs(Fu),abs(Fu),'edgecolor','none','facecolor','interp') ;
-    title("Wavevector spectrum at f="+string(w/2/pi)+"Hz")
-    xlabel 'Wavenumber kx (rad/mm)' ; ylabel 'Wavenumber ky (rad/mm)' ;
-% theoretical wavenumbers 
-    theta = linspace(0,2*pi,100)' ;
-    Kp = plate.wavenumbers(PLATE,w,theta) ;
-    plot(real(Kp.kb).*cos(theta),real(Kp.kb).*sin(theta),':r') ;
-    
-%% ESPRIT
+PLATE.L = [100 80] ; % plate dimensions (mm)
+PLATE.dx = 2*[1 1] ; % spatial step (mm)
+PLATE.h = 0.1 ; % plate thickness (mm)
+PLATE.E = 70e3.*(1 + 0.05*1i) ; % Young Modulus (MPa)
+PLATE.nu = 0.33 ; % Poisson ratio
+PLATE.rho = 2600e-12 ; % Density (tons/mm3)
+PLATE.bc = 'clamped' ; % kind of boundary conditions
+PLATE.xf = PLATE.L .* xF_var ; % location of the point load application
 
-out = ESPRIT_fcn(U,'DIMS_K',[1 2],'R0',5) ;
-    clf ; axis equal tight ;
-    surf(K{1},K{2},0*abs(Fu),abs(Fu),'edgecolor','none','facecolor','interp') ;
-    title("Wavevector spectrum at f="+string(w/2/pi)+"Hz")
-    xlabel 'Wavenumber kx (rad/mm)' ; ylabel 'Wavenumber ky (rad/mm)' ;
-    ke = out.K.'./PLATE.dx ;
-    plot(real(ke(:,1)),real(ke(:,2)),'.w','markersize',30) ;        
-         
+% Natural frequencies vector (rad/s)
+w = 2*pi*linspace(0, 15e3, 50 + 1) ;  w(1) = [];
+
+% Signal type selection ('Green function' or 'Plate FEM')
+signal_Type = 'Green function' ;
+
+% Signal-to-noise ratio in dB (in the area of analysis)
+SNR_var = flip([inf]) ; %linspace(35, 100, 10)
+
+% Area of analysis prescription
+area = [35    45 ;
+        100   80] ; % coordinates of the 4 corners of the selected area
+
+% Parameters linked to the algorithm used to extact structural parameters
+method = 'CFAT' ;
+model = 'Thin-Isotropic-Homogeneous' ;
+
+%% Signals generation
+
+% Basic discretization
+PLATE.mesh = fe.mesh.gridmesh(PLATE.L, PLATE.dx) ;
+
+% Plate behavior
+PLATE = plate.behavior(PLATE) ;
+
+switch signal_Type
+    case 'Green function'
+
+        % Distance from the source
+        R = @(X, Y) sqrt(X.^2 + Y.^2) ;
+
+        % Hankel funtion and modified bessel function of the second kind
+        H0_2 = @(x) besselh(0, 2, x) ;
+        K0 = @(x) besselk(0, x) ;
+
+        % Theoretical wavenumber
+        k_th = sqrt(w)/ (PLATE.D(1) / (PLATE.rho * PLATE.h))^(1/4);
+
+        % Green's function of an infinite plate (Time harmonic) (unit load)
+        Gr_fcn = @(X0, Y0) -1/(PLATE.rho * PLATE.h) ./ (4*pi * (w ./ k_th).^2) .* (pi*1j/2 * H0_2(R(X0, Y0) .* k_th)...
+                                                                                           + K0(R(X0, Y0) .* k_th)) ; 
+        
+        % Construction of the signal
+        u = zeros([size(PLATE.mesh.X,1), length(w) size(xF_var, 3)]) ;
+        for i_y0 = 1:size(xF_var, 3)
+            % For each source position
+            X0 = PLATE.mesh.X(:,1) - PLATE.xf(:,1,i_y0) ; Y0 = PLATE.mesh.X(:,2) - PLATE.xf(:,2,i_y0);
+            u(:,:,i_y0) = Gr_fcn(X0, Y0) ;
+        end
+
+    case 'Plate FEM'
+        
+        % Introduction of anisotropy
+        PLATE.D(2,2) = PLATE.D(2,2)*25 ;
+        
+        % Solve using FEM
+        u = fe.mindlin(PLATE, w) ;
+end
+
+% Area of analysis selection
+area(2,:) = min(area(2,:), PLATE.L) ; % cropping to stay inside plate borders
+area_Idx = [area(1,1)<=PLATE.mesh.X(:,1) & PLATE.mesh.X(:,1)<=area(2,1)...
+          & area(1,2)<=PLATE.mesh.X(:,2) & PLATE.mesh.X(:,2)<=area(2,2)] ;
+
+% generate a white noise and compute the vector of amplification according to the
+% desired signal-to-noise ratios (in the selected area)
+noise = randn(size(u, [1 2])) ;
+noise_Amp = rms(u(area_Idx,:,:)) ./ (sqrt(10.^(SNR_var.'/10)) .* rms(noise)) ; % noise amplification 
+
+%% Signals analysis
+
+% for each source position
+for i_xF = 1:size(xF_var, 3)
+    
+    % for each signal-to-noise ratio
+    for i_SNR = 1:length(SNR_var)
+        
+        %% Signal noising and area of analysis extraction
+        % Add noise
+        u_noisy = u(:,:, i_xF) + noise_Amp(i_SNR,:, i_xF) .* noise ;
+    
+        % Reshape to size : nX, nY, nw
+        U = reshape(u_noisy, [PLATE.mesh.nX+1 numel(w)]) ;
+        X = reshape(PLATE.mesh.X, [PLATE.mesh.nX+1 2]) ;
+        
+        % Selection of the signal in the window
+        area_Idx = {area(1,1)<=X(:,1,1) & X(:,1,1)<=area(2,1),... 
+                    area(1,2)<=X(1,:,2) & X(1,:,2)<=area(2,2)} ; % indices delimiting the selected area
+        U_wind = U(area_Idx{1}, area_Idx{2}, :) ; % part of the displacement field inside the selected area
+        X_wind = X(area_Idx{1}, area_Idx{2}, :) ;
+        
+        %% Wavenumber domain response
+        
+        Fu = 0*U_wind ;
+        for i_w= 1:length(w)
+            [Fu(:,:,i_w), K] = spectrum.fourier(U_wind(:,:,i_w), PLATE.dx) ;
+        end
+        
+        %% Wavenumber analysis
+
+        % Initialisation of the wavevectors and structural parameters arrays
+        k = cell(1, length(w)) ;
+        Str_prm = k ;
+
+        for i_w = 1:length(w)
+            switch method
+                case 'HRWA'
+                    [k{i_w}, decay, S_reco] = esprit2D([1 20], U_wind(:,:,i_w), inf, 'ESTER') ;
+        
+                    % Scaled wavenumber vector
+                    k{i_w} = k{i_w}./PLATE.dx ; 
+                    [~, i_sort] = sort(angle(real(k{i_w}(:, 1)) + 1i*real(k{i_w}(:, 2)))) ;
+                    
+                    % Sort wavevectors according to angle theta
+                    k{i_w} = k{i_w}(i_sort, :) ;
+
+                    % Estimation of mechanical parameters
+                    
+                    switch model
+                        case 'Thin-Isotropic-Homogeneous'
+                            A = @(theta) ones(size(theta)) ;
+                        case 'Thin-Anisotropic-Homogeneous'
+                            A = @(theta) [cos(theta).^4, sin(theta).^4, 2*cos(theta).^2.*sin(theta).^2, 4*cos(theta).^3.*sin(theta), 4*cos(theta).*sin(theta).^3] ;
+                    end
+                    Str_prm{i_w} = A(angle(real(k{i_w})*[1; 1j])) \ (PLATE.m * w(i_w)^2 ./ vecnorm(real(k{i_w}), 2, 2).^4) ;
+
+                case {'FAT','CFAT'}
+                    tol = 1e-1 ; maxIter = 100 ;
+                    [Str_prm{i_w}, k{i_w}] = C_FAT(PLATE.dx, U_wind(:,:,i_w), model, method, tol, maxIter) ;
+                     
+                    % Coefficients of the differential equation (structural parameters)
+                    Str_prm{i_w} = PLATE.m * w(i_w).^2 .* Str_prm{i_w} ;
+        
+                case 'convolution kernel'
+                    % k = ;
+                    
+                case 'VFM'
+            
+                    % k = ;
+            
+            end
+        end
+        
+        %% Spatial and wavenumber domain responses plot initialisation
+        
+        % Calculate the theoretical wavenumbers
+        theta = linspace(0,2*pi,100)' ;
+        K_glob = (([1 1 2 4 4].*(PLATE.D([1 5 2 7 8]) + [0 0 2*PLATE.D(9) 0 0])./(PLATE.m .* w.'.^2)) *...
+                        squeeze(prod([cos(permute(theta, [2 3 1])) sin(permute(theta, [2 3 1]))].^[4 0; ...
+                                                                                                   0 4; ...
+                                                                                                   2 2; ...
+                                                                                                   3 1; ...
+                                                                                                   1 3], 2))).^(-1/4);
+        % Calculate the associated theoretical wavevectors
+        K_glob = K_glob.' .* permute([cos(theta) sin(theta)], [1 3 2]) ;
+
+        % Potential ploting of the displacement field and wavenumber response
+        if animate
+            
+            fig = findobj('Name', 'Animation along frequency') ;
+            if isempty(fig)
+                figure('Name', 'Animation along frequency')
+            else
+                figure(fig); clf ;
+            end
+
+            %%%%%%%%% Spatial response %%%%%%%%%
+            
+            ax1 = nexttile ; hold(ax1, 'on') ; view(ax1, [0 90]) ;
+            
+            %fe.mesh.plotmesh(PLATE.mesh,real(u(:,end))) ;
+            surf(X(:,:,1), X(:,:,2), 0*real(U(:,:,1)), real(U(:,:,1)), 'EdgeColor','k',...
+                                                                       'FaceColor','interp',...
+                                                                       'ZDataSource', '0*real(U(:,:,i_w))',...
+                                                                       'CDataSource', 'real(U(:,:, i_w))')
+            % Draw the selected area
+            plot3([X_wind(:,1,1);                           repelem(X_wind(end,1,1), size(U_wind, 2)).'; flip(X_wind(:,1,1));                      repelem(X_wind(1,1,1), size(U_wind, 2)).'],...
+                  [repelem(X_wind(1,1,2), size(U_wind, 1))  X_wind(end,:,2)                              repelem(X_wind(1,end,2), size(U_wind, 1)) flip(X_wind(1,:,2))                      ].',...
+                  0*real([U_wind(:,1,1);                      U_wind(end,:,1).';                           flip(U_wind(:,end,1));                    flip(U_wind(1,:,1)).'                    ]), 'r', 'LineWidth', 3,...
+                  'ZDataSource', "0*real([U_wind(:,1,i_w);    U_wind(end,:,i_w).';                         flip(U_wind(:,end,i_w));                  flip(U_wind(1,:,i_w)).'                  ])")
+            
+            % Display a marker at the source location
+            [~, i_sourceX] = min(abs(PLATE.L(1) .*xF_var(1,1,i_xF) - X(:,1,1))) ; [~, i_sourceY] = min(abs(PLATE.L(2) .*xF_var(1,2,i_xF) - X(1,:,2))) ;
+            scatter3(X(i_sourceX,1,1), X(1,i_sourceY,2), 0*real(U(i_sourceX,i_sourceY,1)), 'k', 'filled')
+            
+            xlabel(ax1, 'X(mm)') ; ylabel(ax1, 'Y(mm)')
+            subtitle(ax1, "Displacement field")
+            axis(ax1, 'tight') ; zlim([min(real(U(:))) max(real(U(:)))]); ax1.DataAspectRatio = [1 1 0.1] ;
+            shading(ax1, 'flat')
+
+            %%%%%%%%% wavenumber response %%%%%%%%%
+            
+            ax2 = nexttile ; hold(ax2, 'on') ; view(ax1, [0 90]) ;
+            
+            surf(K{1}, K{2}, 0*abs(Fu(:,:,1)), abs(Fu(:,:,1)), 'EdgeColor','k',...
+                                                               'FaceColor','interp',...
+                                                               'ZDataSource', '0*abs(Fu(:,:,i_w))',...
+                                                               'CDataSource', 'abs(Fu(:,:,i_w))')
+            
+            xlabel(ax2, 'k_x (rad/mm)') ; ylabel(ax2, 'k_y (rad/mm)')
+            subtitle(ax2, "Wavevector spectrum")
+
+            % Superimpose the theoretical wavenumbers to the wavenumber domain response            
+            scatter(real(K_glob(:,1,1)), real(K_glob(:,1,2)), 'w', 'filled', 'o',...
+                                                                            'SizeData', 15,...
+                                                                            'XDataSource', 'real(K_glob(:,i_w,1))',...
+                                                                            'YDataSource', 'real(K_glob(:,i_w,2))') ;
+            axis(ax2, 'equal', 'tight')
+            
+            % Superimpose the estimated scaled wavenumbers to the wavenumber domain response
+            scatter(ax2, real(k{1}(:,1)), real(k{1}(:,2)), 'k', 'filled', 'o',...
+                                                           'SizeData', 30,...
+                                                           'XDataSource', 'real(k{i_w}(:,1))',...
+                                                           'YDataSource', 'real(k{i_w}(:,2))') ;
+            shading(ax2, 'flat')
+        end
+        %% Animating the displacement field and wavenumber domain spectrum along the frequency axis
+            
+            if animate
+                for i_w = 1:length(w)
+                    refreshdata(ax1) ; try refreshdata(ax2) ; end 
+                    title(ax1, "f = "+string(round(w(i_w)/2/pi*1e2)*1e-2)+" Hz")
+
+                    drawnow; pause(0.1)
+                end
+            end
+
+        %% Comparison between theoretical and estimated dispersion curves and structural parameters
+        
+        %%%%%%%%%%%%%%%%%% Dispersion curves %%%%%%%%%%%%%%%%%%
+
+            % Regroupment of all estimated wavenumbers 
+            k_glob = cat(1,k{:}) ;
+            
+            fig = findobj('Name', 'Dispersion curves') ;
+            if isempty(fig)
+                figure('Name', 'Dispersion curves')
+                ax3 = axes('Color', 'none') ; hold(ax3, 'on') ;
+                surf(real(K_glob(:,:,1)), real(K_glob(:,:,2)), repelem(w, length(theta), 1), 0*repelem(w, length(theta), 1,3), 'FaceAlpha', 0.7)
+                xlabel(ax3, 'k_x (rad/mm)') ; ylabel(ax3, 'k_y (rad/mm)'); zlabel(ax3, 'Natural frequency (rad)')
+                subtitle(ax3, "Dispersion curves")
+                ax3.PlotBoxAspectRatio = [1 1 1] ;
+                view(ax3, [-20 20])
+                shading interp
+                disableDefaultInteractivity(ax3)
+            else
+                figure(fig); ax3 = findobj(fig.Children, 'Type', 'Axes') ;
+            end
+        
+            plot3(ax3, real(k_glob(:, 1)), real(k_glob(:, 2)), repelem(w, cellfun(@(x) size(x, 1), k)), 'LineStyle', 'none',...
+                                                                                                   'Marker', '.',...
+                                                                                                   'MarkerSize', 6,...
+                                                                                                   'DisplayName', num2str([i_xF i_SNR]))
+
+        %%%%%%%%%%%%%%%%%% Structural parameters %%%%%%%%%%%%%%%%%%
+
+            fig = findobj('Name', 'Structural parameters') ;
+            if isempty(fig)
+                figure('Name', 'Structural parameters')
+                t = tiledlayout(2,3,"TileSpacing","tight") ;
+                ax4 = nexttile(t) ; zlabel('D_{11} (N.m)') ; 
+                ax5 = nexttile(t) ; zlabel('D_{12} + 2*D_{66} (N.m)') ; 
+                ax6 = nexttile(t) ; zlabel('D_{16} (N.m)') ; 
+                ax7 = nexttile(t, 5) ; zlabel('D_{22} (N.m)') ; 
+                ax8 = nexttile(t, 6) ; zlabel('D_{26} (N.m)') ;
+                hold([ax4 ax5 ax6 ax7 ax8], 'on') ;
+                xlabel([ax4 ax5 ax6 ax7 ax8], 'Frequency (Hz)')
+                ylabel([ax4 ax5 ax6 ax7 ax8], 'Distance (mm)')
+                view([ax4 ax5 ax6 ax7 ax8], [-10 60])
+                linkaxes([ax4 ax5 ax6 ax7 ax8], 'xy')
+                linkprop([ax4 ax5 ax6 ax7 ax8], 'view') ;
+
+                set([ax4 ax5 ax6 ax7 ax8], 'PlotboxAspectRatio', [1 1 1])
+                % set([ax4 ax5 ax6 ax7 ax8], 'FontSize', 15)
+            else
+                axTmp = mat2cell(flip(findobj(fig.Children, 'Type', 'Axes')), ones(5, 1), 1) ;
+                figure(fig); 
+                t = findobj(fig, 'Type', 'TiledLayout') ;
+                [ax4, ax5, ax6, ax7, ax8] = deal(axTmp{:}) ;
+            end
+            
+            % Regroupment of all estimated structural parameters
+            Str_prm_glob = cat(2,Str_prm{:}).' ;
+
+            % Compute distance to the source
+            Dist = sqrt(sum((squeeze(X_wind(1,1,:)).' - squeeze(xF_var(1,:,i_xF))).^2, 2)) ;
+
+            % Plot theoretical structural parameters
+            plot3(ax4, w, Dist+0*w, real(PLATE.D(1,1))+0*w, 'k--')
+            plot3(ax5, w, Dist+0*w, real(PLATE.D(1,2) + 2*PLATE.D(3,3))+0*w, 'k--')
+            plot3(ax6, w, Dist+0*w, real(PLATE.D(1,3))+0*w, 'k--')
+            plot3(ax7, w, Dist+0*w, real(PLATE.D(2,2))+0*w, 'k--')
+            plot3(ax8, w, Dist+0*w, real(PLATE.D(2,3))+0*w, 'k--')
+
+            % Add estimated structural parameters to the figure
+            plot3(ax4, w, Dist+0*w, real(Str_prm_glob(:,1)))
+            try
+                plot3(ax5, w, Dist+0*w, real(Str_prm_glob(:, 3)))
+                plot3(ax6, w, Dist+0*w, real(Str_prm_glob(:, 4)))
+                plot3(ax7, w, Dist+0*w, real(Str_prm_glob(:,2)))
+                plot3(ax8, w, Dist+0*w, real(Str_prm_glob(:,5)))
+            end
+            set(cat(1,t.Children.Children), 'LineWidth', 2)
+            % legend(ax4, ["Theoretical" string(method) + " " + string(model) + " " + string(scheme)],  'Location', 'SouthEast', 'FontSize', 14)
+            axis([ax4 ax5 ax6 ax7 ax8], 'tight')
+
+            zlim(ax4, [0 3] * real(PLATE.D(1,1)))
+            zlim(ax5, [0 3] * real(PLATE.D(1,2) + 2*PLATE.D(3,3)))
+            try zlim(ax6, [0 3] * real(PLATE.D(1,3))); end
+            zlim(ax7, [0 3] * real(PLATE.D(2,2)))
+            try zlim(ax8, [0 3] * real(PLATE.D(2,3))); end
+            
+    end
+end

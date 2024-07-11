@@ -67,17 +67,20 @@ function U = mindlin(PLATE,w)
     K = K(keepDOF,keepDOF) ;
     M = M(keepDOF,keepDOF) ;
 % Applied load
-    [~,iF] = min(sum((MESH.X-PLATE.xf).^2,2)) ;
-    f = zeros(size(MESH.X,1),5) ;
-    f(iF,3) = 1 ;
-    f = f(keepDOF) ;
-% Solve for all frequencies
-    U = zeros(size(MESH.X,1)*5,numel(w)) ;
-    for ww = 1:numel(w)
-        U(keepDOF,ww) = (K-w(ww)^2*M)\f ;
+    f = zeros(size(MESH.X,1),5, size(PLATE.xf,3)) ;
+    for ii_F = 1:size(PLATE.xf, 3)
+        [~,iF] = min(sum((MESH.X-PLATE.xf(:,:,ii_F)).^2,2)) ;
+        f(iF,3,ii_F) = 1 ;
     end
-    U = reshape(U,size(MESH.X,1),5,numel(w)) ;
+    f = reshape(f, [], size(PLATE.xf,3)) ;
+    f = f(keepDOF, :) ;
+% Solve for all frequencies
+    U = zeros(size(MESH.X,1)*5,numel(w), size(PLATE.xf, 3)) ;
+    for ww = 1:numel(w)
+        U(keepDOF,ww, :) = (K-w(ww)^2*M)\f ;
+    end
+    U = reshape(U,size(MESH.X,1),5,numel(w),size(PLATE.xf, 3)) ;
 % Extract only the transverse displacement
-    U = reshape(U(1:prod(MESH.nX+1),3,:),[],numel(w)) ;
+    U = reshape(U(1:prod(MESH.nX+1),3,:),[],numel(w),size(PLATE.xf, 3)) ;
 end
 
