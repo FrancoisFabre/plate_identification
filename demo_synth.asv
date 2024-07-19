@@ -4,7 +4,7 @@ animate = true ; % if true the displacement field and wavenumber response are an
 %% Variable parameters
 
 % Source positions (not simultaneous) (pourcentage of width and length)
-xF_var = permute([linspace(2,30,1).' linspace(50,50,1).'] /100, [3 2 1]) ;
+xF_var = permute([linspace(2,50,10).' linspace(50,50,10).'] /100, [3 2 1]) ;
 
 % Plate parameters
 PLATE.L = [100 80] ; % plate dimensions (mm)
@@ -20,7 +20,7 @@ PLATE.xf = PLATE.L .* xF_var ; % location of the point load application
 w = 2*pi*linspace(0, 15e3, 50 + 1) ; w(1) = [] ;
 
 % Signal type selection ('Green function' or 'Plate FEM')
-signal_Type = 'Plate FEM' ;
+signal_Type = 'Green function' ;
 
 % Signal-to-noise ratio in dB (in the area of analysis)
 SNR_var = flip([inf]) ; %linspace(35, 100, 10)
@@ -30,7 +30,7 @@ area = [35    45;
         100   80] ; % coordinates of the 4 corners of the selected area
 
 % Parameters linked to the algorithm used to extact structural parameters
-method = 'HRWA' ;
+method = 'FAT' ;
 model = 'Thin-Isotropic-Homogeneous' ;
 
 %% Signals generation
@@ -124,7 +124,7 @@ for i_xF = 1:size(xF_var, 3)
             switch method
                 case 'HRWA'
                     [k{i_w}, decay, S_reco] = esprit2D([1 20], U_wind(:,:,i_w), inf, 'ESTER') ;
-                    
+        
                     % Scaled wavenumber vector
                     k{i_w} = k{i_w}./PLATE.dx ; 
                     [~, i_sort] = sort(angle(real(k{i_w}(:, 1)) + 1i*real(k{i_w}(:, 2)))) ;
@@ -143,7 +143,7 @@ for i_xF = 1:size(xF_var, 3)
                     Str_prm{i_w} = A(angle(real(k{i_w})*[1; 1j])) \ (PLATE.m * w(i_w)^2 ./ vecnorm(real(k{i_w}), 2, 2).^4) ;
 
                 case {'FAT','CFAT'}
-                    tol = 1e-3 ; maxIter = 1000 ;
+                    tol = 1e-2 ; maxIter = 100 ;
                     [Str_prm{i_w}, k{i_w}] = C_FAT(PLATE.dx, U_wind(:,:,i_w), model, method, tol, maxIter) ;
                      
                     % Coefficients of the differential equation (structural parameters)
@@ -158,7 +158,7 @@ for i_xF = 1:size(xF_var, 3)
             
             end
         end
-
+        
         %% Spatial and wavenumber domain responses plot initialisation
         
         % Calculate the theoretical wavenumbers
@@ -288,7 +288,7 @@ for i_xF = 1:size(xF_var, 3)
                 hold([ax4 ax5 ax6 ax7 ax8], 'on') ;
                 xlabel([ax4 ax5 ax6 ax7 ax8], 'Frequency (Hz)')
                 ylabel([ax4 ax5 ax6 ax7 ax8], 'Distance (mm)')
-                view([ax4 ax5 ax6 ax7 ax8], [0 0])
+                view([ax4 ax5 ax6 ax7 ax8], [-10 60])
                 linkaxes([ax4 ax5 ax6 ax7 ax8], 'xy')
                 linkprop([ax4 ax5 ax6 ax7 ax8], 'view') ;
 
@@ -304,7 +304,7 @@ for i_xF = 1:size(xF_var, 3)
             % Regroupment of all estimated structural parameters
             Str_prm_glob = cat(2,Str_prm{:}).' ;
 
-            % Compute distance: source - center of area of analysis
+            % Compute distance: source - center of area o
             Dist = sqrt(sum((squeeze(cat(3, mean(X_wind([1 end],1,1)), mean(X_wind(1, [1 end],2)))).'...
                             - squeeze(PLATE.xf(1,:,i_xF))).^2, 2)) ;
 

@@ -19,46 +19,26 @@ function [Coefs, k] = C_FAT(Steps, S, Model, Solver, tolerance, maxIter)
     % Renaming the grid steps
     dx = Steps(1) ; dy = Steps(end) ; clear Steps
 
-
     % Discretized stiffness operator of the system
     switch Model
         case 'Thin-Isotropic-Homogeneous'
-            switch Solver
-                case 'FAT'
-                    dw = @(i_x, i_y) cat(3, dw_4x(i_x, i_y), dw_4y(i_x, i_y), 2*dw_2x2y(i_x, i_y)) ;
 
-                    % Initialisation of the discrete bilaplacian estimator
-                    der_bounds = [2 2];
-                    dW = zeros([size(S) - der_bounds, 3]) ;
+            dw = @(i_x, i_y) cat(3, dw_4x(i_x, i_y), dw_4y(i_x, i_y), 2*dw_2x2y(i_x, i_y)) ;
 
-                case 'CFAT'
-                    dw = @(i_x, i_y) cat(3, dw_4x(i_x, i_y), dw_4y(i_x, i_y), 2*dw_2x2y(i_x, i_y)) ;
-
-                    % Initialisation of the discrete bilaplacian estimator
-                    der_bounds = [2 2];
-                    dW = zeros([size(S) - der_bounds, 3]) ;
-            end
+            % Initialisation of the discrete bilaplacian estimator
+            der_bounds = [2 2];
+            dW = zeros([size(S) - der_bounds, 3]) ;
 
             k_th = @(Coefs, theta) (([1 1 2].*Coefs) * squeeze(prod([cos(theta) sin(theta)].^[4 0; ...
                                                                                               0 4; ...
                                                                                               2 2], 2))).^(-1/4);
     
         case 'Thin-Anisotropic-Homogeneous'
-            switch Solver
-                case 'FAT'
-                    dw = @(i_x, i_y) cat(3, dw_4x(i_x, i_y), dw_4y(i_x, i_y), 2*dw_2x2y(i_x, i_y), 4*dw_3x1y(i_x, i_y), 4*dw_1x3y(i_x, i_y)) ;
+            dw = @(i_x, i_y) cat(3, dw_4x(i_x, i_y), dw_4y(i_x, i_y), 2*dw_2x2y(i_x, i_y), 4*dw_3x1y(i_x, i_y), 4*dw_1x3y(i_x, i_y)) ;
 
-                    % Initialisation of the discrete bilaplacian estimator
-                    der_bounds = [4 4];
-                    dW = zeros([size(S) - der_bounds, 5]) ;
-
-                case 'CFAT'
-                    dw = @(i_x, i_y) cat(3, dw_4x(i_x, i_y), dw_4y(i_x, i_y), 2*dw_2x2y(i_x, i_y), 4*dw_3x1y(i_x, i_y), 4*dw_1x3y(i_x, i_y)) ;
-
-                    % Initialisation of the discrete bilaplacian estimator
-                    der_bounds = [4 4];
-                    dW = zeros([size(S) - der_bounds, 5]) ;
-            end
+            % Initialisation of the discrete bilaplacian estimator
+            der_bounds = [4 4];
+            dW = zeros([size(S) - der_bounds, 5]) ;  
 
             k_th = @(Coefs, theta) (([1 1 2 4 4].*Coefs) * squeeze(prod([cos(theta) sin(theta)].^[4 0; ...
                                                                                                   0 4; ...
@@ -207,7 +187,7 @@ function [Coefs, k] = C_FAT(Steps, S, Model, Solver, tolerance, maxIter)
 
 
     function out = NLsolver
-        % Solves a nonlinear LS problem A argmin ||A*B(A) - w||^2
+        % Solves a nonlinear LS problem A = argmin ||A*B(A) - w||^2
         
         B = @(A) dW * [1;
                        1;
@@ -217,7 +197,7 @@ function [Coefs, k] = C_FAT(Steps, S, Model, Solver, tolerance, maxIter)
         dres_dA = @(A) B(A) + A * dZeta_dA(A) * dXi_dX(Zeta(A)) * dW(:,3) / 2 ;
 
         % Initialisation of the nonlinear LS problem (from the FAT solution)
-        A(1) = sum(dW, 2) \ reshape(S(1+der_bounds(1):end-der_bounds(2), 1+der_bounds(1):end-der_bounds(2)), [], 1) ;
+        A(1) = sum(dW, 2) \ W ;
 
         % A_glob = A(1) ;
 
@@ -271,14 +251,17 @@ function [Coefs, k] = C_FAT(Steps, S, Model, Solver, tolerance, maxIter)
     end
 
     function out = NLsolver2
-        % Solves a nonlinear LS problem A argmin ||A*B(A) - w||^2
+        % Solves a nonlinear LS problem A = argmin ||A*B(A) - w||^2
         
         % Initialisation of the nonlinear LS problem (from the FAT solution)
         Ratio_Init = dW \ W ;
-        % A(:,1) = Ratio_Init ;
         
-        A(:,1) = sum(dW,2) \ W ;
-
+        switch Model
+            case 'Thin-Isotropic-Homogeneous'
+                A(:,1) = sum(dW,2) \ W ;
+            case 'Thin-Anisotropic-Homogeneous'
+                A(:,1) = Ratio_Init ;
+        end    
 
         % A_glob = A(:,1) ;
 
@@ -294,28 +277,24 @@ function [Coefs, k] = C_FAT(Steps, S, Model, Solver, tolerance, maxIter)
             theta_tmp = linspace(0,pi, Ntheta).' ;
             X = 1/dx * sin(k_th(A(:,1).' , permute(theta_tmp, [2 3 1])).' .* cos(theta_tmp) * dx) ; 
             Y = 1/dy * sin(k_th(A(:,1).' , permute(theta_tmp, [2 3 1])).' .* sin(theta_tmp) * dy) ; 
+            % X = pi * k_th(A(:,1).' , permute(theta_tmp, [2 3 1])).' .* cos(theta_tmp) .* sinc(k_th(A(:,1).' , permute(theta_tmp, [2 3 1])).' .* cos(theta_tmp) * dx / pi) ; 
+            % Y = pi * k_th(A(:,1).' , permute(theta_tmp, [2 3 1])).' .* sin(theta_tmp) .* sinc(k_th(A(:,1).' , permute(theta_tmp, [2 3 1])).' .* sin(theta_tmp) * dy / pi) ; 
 
             switch Model
                 case 'Thin-Isotropic-Homogeneous'
-                    % mu = ([(X.^[4 0 2]) .* (Y.^[0 4 2])] .* A(:,1).') \ ones(size(theta_tmp)) ;
+                    mu = ((X.^[4 0 2] .* Y.^[0 4 2]) .* ([1 1 2].*A(:,1).')) \ ones(size(theta_tmp)) ;
 
-                    mu = ([(X.^[4 0 2]) .* (Y.^[0 4 2])] .* repmat(A(:,1), 3, 1).') \ ones(size(theta_tmp)) ;
-
-
-                    % mu = lsqminnorm([X.^[4 0 2] .* Y.^[0 4 2]] .* A(:,1).', ones(size(theta_tmp))) ;
+                    % Compute A_n+1
+                    A(:,2) = mu \ Ratio_Init ;
+                    % A(:,2) = (dW * mu) \ W ;
 
                 case 'Thin-Anisotropic-Homogeneous'
-                    mu = ([X.^[4 0 2 3 1] .* Y.^[0 4 2 1 3]] .* A(:,1).') \ ones(size(theta_tmp)) ;
-                    % mu = lsqminnorm([X.^[4 0 2 3 1] .* Y.^[0 4 2 1 3]] .* A(:,1).', ones(size(theta_tmp))) ;
+                    mu = ((X.^[4 0 2 3 1] .* Y.^[0 4 2 1 3]) .* ([1 1 2 4 4].*A(:,1).')) \ ones(size(theta_tmp)) ;
                     
-            end
-
-            % Compute A_n+1
-            % A(:,2) = Ratio_Init ./ mu ;
-            A(:,2) = mu \ Ratio_Init ;
-
-            % A(:,2) = (dW .* mu.') \ W ;
-            % A(:,2) = (dW * mu) \ W ;
+                    % Compute A_n+1
+                    A(:,2) = Ratio_Init ./ mu ;
+                    % A(:,2) = (dW .* mu.') \ W ;
+            end           
 
             % Relative error between A_n+1 and A_n (ckecking for convergence)
             rel_Err = abs(diff(A,1,2)) ./ abs(A(:,1)) ;
@@ -326,7 +305,8 @@ function [Coefs, k] = C_FAT(Steps, S, Model, Solver, tolerance, maxIter)
             % A_glob(:,end+1) = A(:,2) ;
         end
 
+        % figure(1)
         % plot(abs(A_glob));
-        out = A(2) ;
+        out = A(:,2) ;
     end
 end

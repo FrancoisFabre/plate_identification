@@ -63,27 +63,52 @@ function [pn, decay, S_reco] = esprit2D(N_comp, S, decayThreshold, Criterion)
         [T, ~] = eig(K) ;
     
         % Estimation of discrete poles
-        Z1 = diag(T \ F1{i_order} * T) ;
-        Z2 = diag(T \ F2{i_order} * T) ;
+        Z1{i_order} = diag(T \ F1{i_order} * T) ;
+        Z2{i_order} = diag(T \ F2{i_order} * T) ;
     
         % Estimation of continuous poles (wavenumbers or natural frequencies)
-        pn{i_order} = -1i * [log(Z1), log(Z2)] ;
+        pn{i_order} = -1i * [log(Z1{i_order}), log(Z2{i_order})] ;
     end
 
     if strcmp(Criterion, 'ESTER')
         
         pn = pn{1} ;
-    
+        Z1 = Z1{1} ;
+        Z2 = Z2{1} ;
+
     elseif strcmp(Criterion, 'Stabchart')
-        ax1 = nexttile; hold on ; ax2 = nexttile; hold on ;
-        for ii = 1:length(F1)
-            scatter(ax1, vecnorm(real(pn{ii}), 2, 2), ii, 'b')
-            scatter(ax2, vecnorm(imag(pn{ii}), 2, 2), ii, 'r')
-        end
+        pn_glob = cat(1, pn{:}) ;
+        Z1_glob = cat(1, Z1{:}) ;
+        Z2_glob = cat(1, Z2{:}) ;
 
-        pn = Stabchart_selection(pn) ;
+        % fig = findobj('Name', 'Stabilization chart') ;
+        % if isempty(fig)
+        %     figure('Name', 'Stabilization chart')
+        % else
+        %     figure(fig) ; clf ;
+        % end
+        % ax1 = nexttile; hold on ; ax2 = nexttile; hold on ;
+        % for ii = 1:length(F1)
+        %     scatter3(ax1, abs(real(pn{ii}) * [1; 1j]), angle(real(pn{ii}) * [1; 1j]), ii, 'b', 'SizeData', 12)
+        %     scatter3(ax2, abs(imag(pn{ii}) * [1; 1j]), angle(imag(pn{ii}) * [1; 1j]), ii, 'r', 'SizeData', 12)
+        % 
+        %     xlabel(ax1, 'Re(k) (m^{-1})') ; xlabel(ax2, 'Im(k) (m^{-1})') ; 
+        %     ylabel(ax1, 'arg(Re(k)) (rad)') ; ylabel(ax2, 'arg(Im(k)) (rad)') ; 
+        %     zlabel([ax1 ax2], 'order') ; view([ax1 ax2], [0 0]) ; axis([ax1 ax2], 'square')
+        %     linkprop([ax1 ax2], 'view') ;
+        % end
 
+        % Tolerances to determine the stability of the poles between consecutive orders
+        tol = [1e-2 1e-2 5e-1 5e-1] ; 
+
+        % Number of repetition of a pole to be extracted from the stabilization chart
+        Nrep = round(length(pn) / 3) ;
+
+        pn = Stabchart_selection(pn, tol, Nrep, 'Norm-Angle') ;
+
+        Z1 = exp(1i*pn(:, 1)) ; Z2 = exp(1i*pn(:, 2)) ;
     end
+
     % Spatial decay ratio vector
     decay = vecnorm(imag(pn), 2, 2) ./ vecnorm(real(pn), 2, 2) ;
 
